@@ -37,91 +37,105 @@
     <div style="margin-top:8px"><small>Tip: URL에 파라미터로도 제어 가능 (?list=...&autoplay=1&mute=1&loop=1&shuffle=0&index=0)</small></div>
   </div>
 
-  <script src="https://www.youtube.com/iframe_api"></script>
-  <script>
-    // --- helpers ---
-    const qs = new URLSearchParams(location.search);
-    const el = id => document.getElementById(id);
-    const extractListId = (val) => {
-      if (!val) return "";
-      try {
-        const u = new URL(val);
-        return u.searchParams.get("list") || val;
-      } catch { return val; } // 이미 ID면 그대로
-    };
+<script src="https://www.youtube.com/iframe_api"></script>
+<script>
+  // --- helpers ---
+  const qs = new URLSearchParams(location.search);
+  const el = id => document.getElementById(id);
+  const extractListId = (val) => {
+    if (!val) return "";
+    try { const u = new URL(val); return u.searchParams.get("list") || val; }
+    catch { return val; }
+  };
 
-    // --- state from URL ---
-    const state = {
-      list: extractListId(qs.get("list")),
-      autoplay: Number(qs.get("autoplay") ?? 1),
-      mute: Number(qs.get("mute") ?? 1),
-      loop: Number(qs.get("loop") ?? 1),
-      shuffle: Number(qs.get("shuffle") ?? 0),
-      index: Number(qs.get("index") ?? 0)
-    };
+  // --- state from URL ---
+  const state = {
+    list: extractListId(qs.get("list")),
+    autoplay: Number(qs.get("autoplay") ?? 1),
+    mute: Number(qs.get("mute") ?? 1),
+    loop: Number(qs.get("loop") ?? 1),
+    shuffle: Number(qs.get("shuffle") ?? 0),
+    index: Number(qs.get("index") ?? 0)
+  };
 
-    // init form defaults
-    el("listInput").value = state.list || "";
-    el("shuffleSel").value = String(state.shuffle);
-    el("loopSel").value = String(state.loop);
-    el("muteSel").value = String(state.mute);
+  // init form defaults (폼이 있다면)
+  el("listInput")?.value = state.list || "";
+  el("shuffleSel")?.value = String(state.shuffle);
+  el("loopSel")?.value = String(state.loop);
+  el("muteSel")?.value = String(state.mute);
 
-    let player;
-    window.onYouTubeIframeAPIReady = () => {
-      player = new YT.Player("player", {
-        width: "100%",
-        height: "100%",
-        playerVars: {
-          listType: "playlist",
-          list: state.list || undefined,
-          autoplay: state.autoplay,
-          mute: state.mute,
-          controls: 1,
-          rel: 0,
-          modestbranding: 1,
-          playsinline: 1,
-          origin: location.origin
-        },
-        events: { onReady: onReady }
-      });
-    };
+  let player, bootstrapped = false;
 
-    function onReady() {
-      if (state.list) {
-        player.setShuffle(!!state.shuffle);
-        player.setLoop(!!state.loop);
-        try { player.playVideoAt(state.index); } catch {}
-        if (state.autoplay) {
-          if (state.mute) player.mute();
-          player.playVideo();
-        }
-      }
-    }
-
-    el("loadBtn").addEventListener("click", () => {
-      const list = extractListId(el("listInput").value.trim());
-      const shuffle = el("shuffleSel").value === "1";
-      const loop = el("loopSel").value === "1";
-      const mute = el("muteSel").value === "1";
-
-      if (!list) return alert("Playlist ID 또는 URL을 넣어주세요.");
-
-      // 플레이리스트 강제 로드
-      player.cuePlaylist({ listType: "playlist", list });
-      player.setShuffle(shuffle);
-      player.setLoop(loop);
-      if (mute) player.mute(); else player.unMute();
-      player.playVideoAt(0);
-      player.playVideo();
-
-      // 주소 표시(공유용)
-      const url = new URL(location.href);
-      url.search = new URLSearchParams({
-        list, autoplay: 1, mute: mute ? 1 : 0, loop: loop ? 1 : 0,
-        shuffle: shuffle ? 1 : 0, index: 0
-      }).toString();
-      history.replaceState(null, "", url);
+  // 1) 플레이어 생성 (처음엔 list 안 넣음: 우리가 직접 cue/load 할 것)
+  window.onYouTubeIframeAPIReady = () => {
+    player = new YT.Player("player", {
+      width: "100%",
+      height: "100%",
+      playerVars: { playsinline: 1, modestbranding: 1, rel: 0, origin: location.origin },
+      events: { onReady, onStateChange }
     });
-  </script>
+  };
+
+  // 2) 준비되면 재생목록 cue
+  function onReady() {
+    if (state.list) {
+      player.cuePlaylist({ listType: "playlist", list: state.list });
+    }
+  }
+
+  // 3) CUED 상태에서 실제 셔플/루프/재생을 **강제**
+  function onStateChange(e) {
+    if (bootstrapped) return;
+    if (e.data === YT.PlayerState.CUED) {
+      bootstrapped = true;
+
+      if (state.mute) player.mute(); else player.unMute();
+
+      if (state.shuffle === 1) {
+        // 현재 cue된 재생목록을 가져와 셔플 후 강제 로드
+        const arr = (player.getPlaylist && player.getPlaylist()) || [];
+        if (arr.length > 1) {
+          // Fisher–Yates
+          for (let i = arr.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [arr[i], arr[j]] = [arr[j], arr[i]];
+          }
+          player.loadPlaylist(arr, 0, 0); // 우리가 섞은 순서로 로드
+        } else {
+          player.playVideoAt(state.index || 0);
+        }
+      } else {
+        // 셔플 끈 상태: 지정 인덱스부터
+        player.playVideoAt(state.index || 0);
+      }
+
+      player.setLoop(!!state.loop);
+      if (state.autoplay) player.playVideo();
+    }
+  }
+
+  // 4) (옵션) UI 버튼으로 다시 로드할 때도 동일 로직 타게
+  el("loadBtn")?.addEventListener("click", () => {
+    const list = extractListId(el("listInput").value.trim());
+    const shuffle = el("shuffleSel").value === "1";
+    const loop = el("loopSel").value === "1";
+    const mute = el("muteSel").value === "1";
+    if (!list) return alert("Playlist ID 또는 URL을 넣어주세요.");
+
+    state.list = list; state.shuffle = shuffle ? 1 : 0;
+    state.loop = loop ? 1 : 0; state.mute = mute ? 1 : 0; state.index = 0;
+
+    bootstrapped = false; // 다시 셔플 진행
+    player.cuePlaylist({ listType: "playlist", list });
+
+    // 공유용 URL 갱신
+    const url = new URL(location.href);
+    url.search = new URLSearchParams({
+      list, autoplay: 1, mute: state.mute, loop: state.loop, shuffle: state.shuffle, index: 0
+    }).toString();
+    history.replaceState(null, "", url);
+  });
+</script>
+
 </body>
 </html>
